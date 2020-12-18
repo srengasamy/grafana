@@ -191,6 +191,10 @@ func (proxy *DataSourceProxy) director(req *http.Request) {
 		}
 	default:
 		req.URL.Path = util.JoinURLFragments(proxy.targetUrl.Path, proxy.proxyPath)
+		if req.URL.Path == "/hyperlogs_query" { // For hyperlogs query
+			req.URL.Host = strings.Replace(proxy.targetUrl.Host, "api", "websocket", 1)
+			req.Host = strings.Replace(proxy.targetUrl.Host, "api", "websocket", 1)
+		}
 	}
 
 	if proxy.ds.BasicAuth {

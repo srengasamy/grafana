@@ -29,12 +29,7 @@ import { getTemplateSrv, TemplateSrv, BackendSrvRequest, FetchError, getBackendS
 import { addLabelToQuery } from 'app/plugins/datasource/prometheus/add_label_to_query';
 import { getTimeSrv, TimeSrv } from 'app/features/dashboard/services/TimeSrv';
 import { convertToWebSocketUrl } from 'app/core/utils/explore';
-import {
-  lokiResultsToTableModel,
-  lokiStreamResultToDataFrame,
-  lokiStreamsToDataFrames,
-  processRangeQueryResponse,
-} from './result_transformer';
+import { lokiResultsToTableModel, lokiStreamResultToDataFrame, lokiStreamsToDataFrames } from './result_transformer';
 import { getHighlighterExpressionsFromQuery } from './query_utils';
 
 import {
@@ -218,22 +213,26 @@ export class LokiDatasource extends DataSourceApi<LokiQuery, LokiOptions> {
       return this.runLiveQuery(target, maxDataPoints);
     }
     const query = this.createRangeQuery(target, options, maxDataPoints);
-    return this._request(RANGE_QUERY_ENDPOINT, query).pipe(
-      catchError((err: any) => this.throwUnless(err, err.status === 404, target)),
-      switchMap((response: { data: LokiResponse; status: number }) =>
-        processRangeQueryResponse(
-          response.data,
-          target,
-          query,
-          responseListLength,
-          maxDataPoints,
-          this.instanceSettings.jsonData,
-          (options as DataQueryRequest<LokiQuery>).scopedVars,
-          (options as DataQueryRequest<LokiQuery>).reverse
-        )
-      )
-    );
+    return this.runLogQuery(target, query);
   };
+
+  createQueryRangeTarget(target: LokiQuery, request: LokiRangeQueryRequest): LokiLiveTarget {
+    const query = target.expr;
+    const limit = request.limit;
+    const start = request.start;
+    const end = request.end;
+    const direction = request.direction;
+    const step = request.step;
+    const baseUrl = this.instanceSettings.url;
+    const params = serializeParams({ query, limit, start, end, step, direction });
+
+    return {
+      query,
+      url: convertToWebSocketUrl(`${baseUrl}/hyperlogs_query?${params}`),
+      refId: target.refId,
+      size: Math.min(request.limit || Infinity, this.maxLines),
+    };
+  }
 
   createLiveTarget(target: LokiQuery, maxDataPoints: number): LokiLiveTarget {
     const query = target.expr;
@@ -262,6 +261,18 @@ export class LokiDatasource extends DataSourceApi<LokiQuery, LokiOptions> {
         data: data || [],
         key: `loki-${liveTarget.refId}`,
         state: LoadingState.Streaming,
+      }))
+    );
+  };
+
+  runLogQuery = (target: LokiQuery, request: LokiRangeQueryRequest): Observable<DataQueryResponse> => {
+    const liveTarget = this.createQueryRangeTarget(target, request);
+
+    return this.streams.getStream(liveTarget).pipe(
+      map(data => ({
+        data,
+        key: `loki-${liveTarget.refId}`,
+        state: LoadingState.Done,
       }))
     );
   };
