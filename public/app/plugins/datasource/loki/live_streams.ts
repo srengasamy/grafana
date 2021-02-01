@@ -3,7 +3,11 @@ import { Observable, throwError, timer } from 'rxjs';
 import { webSocket } from 'rxjs/webSocket';
 import { LokiTailResponse } from './types';
 import { finalize, map, retryWhen, mergeMap } from 'rxjs/operators';
-import { appendResponseToBufferedData } from './result_transformer';
+import {
+  appendResponseToBufferedData,
+  convertStreamToDataFrames,
+  convertStreamToDataFramesLimited,
+} from './result_transformer';
 
 /**
  * Maps directly to a query in the UI (refId is key)
@@ -41,6 +45,110 @@ export class LiveStreams {
       map((response: LokiTailResponse) => {
         appendResponseToBufferedData(response, data);
         return [data];
+      }),
+      retryWhen((attempts: Observable<any>) =>
+        attempts.pipe(
+          mergeMap((error, i) => {
+            const retryAttempt = i + 1;
+            // Code 1006 is used to indicate that a connection was closed abnormally.
+            // Added hard limit of 30 on number of retries.
+            // If connection was closed abnormally, and we wish to retry, otherwise throw error.
+            if (error.code === 1006 && retryAttempt < 30) {
+              if (retryAttempt > 10) {
+                // If more than 10 times retried, consol.warn, but keep reconnecting
+                console.warn(
+                  `Websocket connection is being disrupted. We keep reconnecting but consider starting new live tailing again. Error: ${error.reason}`
+                );
+              }
+              // Retry every 5s
+              return timer(retryInterval);
+            }
+            return throwError(`error: ${error.reason}`);
+          })
+        )
+      ),
+      finalize(() => {
+        delete this.streams[target.url];
+      })
+    );
+    this.streams[target.url] = stream;
+
+    return stream;
+  }
+
+  getStreamDataFrames(target: LokiLiveTarget, retryInterval = 5000): Observable<DataFrame[]> {
+    let stream = this.streams[target.url];
+    let data: DataFrame[] = [];
+
+    if (stream) {
+      return stream;
+    }
+
+    stream = webSocket(target.url).pipe(
+      map((response: LokiTailResponse) => {
+        let frames: DataFrame[] = convertStreamToDataFrames(response, false);
+        data = data.concat(frames);
+        return data;
+      }),
+      retryWhen((attempts: Observable<any>) =>
+        attempts.pipe(
+          mergeMap((error, i) => {
+            const retryAttempt = i + 1;
+            // Code 1006 is used to indicate that a connection was closed abnormally.
+            // Added hard limit of 30 on number of retries.
+            // If connection was closed abnormally, and we wish to retry, otherwise throw error.
+            if (error.code === 1006 && retryAttempt < 30) {
+              if (retryAttempt > 10) {
+                // If more than 10 times retried, consol.warn, but keep reconnecting
+                console.warn(
+                  `Websocket connection is being disrupted. We keep reconnecting but consider starting new live tailing again. Error: ${error.reason}`
+                );
+              }
+              // Retry every 5s
+              return timer(retryInterval);
+            }
+            return throwError(`error: ${error.reason}`);
+          })
+        )
+      ),
+      finalize(() => {
+        delete this.streams[target.url];
+      })
+    );
+    this.streams[target.url] = stream;
+
+    return stream;
+  }
+
+  getStreamDataFramesLimited(
+    target: LokiLiveTarget,
+    remainingCount: number,
+    retryInterval = 5000
+  ): Observable<DataFrame[]> {
+    let stream = this.streams[target.url];
+    let data: DataFrame[] = [];
+
+    if (stream) {
+      return stream;
+    }
+
+    // NOTE: left off here:
+
+    // remaining_limit = 10;
+
+    let currentCount = 0;
+
+    stream = webSocket(target.url).pipe(
+      map((response: LokiTailResponse) => {
+        if (currentCount >= remainingCount) {
+          // TODO: close the pipe
+          return data;
+        }
+        let frames: DataFrame[] = convertStreamToDataFramesLimited(response, false, remainingCount - currentCount);
+        frames.forEach(frame => (currentCount += frame.length));
+        data = data.concat(frames);
+        console.log('** DEBUG: remaining count:', remainingCount - currentCount);
+        return data;
       }),
       retryWhen((attempts: Observable<any>) =>
         attempts.pipe(

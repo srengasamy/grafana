@@ -268,7 +268,11 @@ export class LokiDatasource extends DataSourceApi<LokiQuery, LokiOptions> {
   runLogQuery = (target: LokiQuery, request: LokiRangeQueryRequest): Observable<DataQueryResponse> => {
     const liveTarget = this.createQueryRangeTarget(target, request);
 
-    return this.streams.getStream(liveTarget).pipe(
+    return this.streams.getStreamDataFramesLimited(liveTarget, 10).pipe(
+      // filter(data => (
+      //   console.log("** FILTER: add this many elements:", );
+
+      // ),
       map(data => ({
         data,
         key: `loki-${liveTarget.refId}`,

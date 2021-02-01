@@ -37,6 +37,7 @@ import {
   LokiStreamResponse,
   LokiStats,
 } from './types';
+//import { LabelsAsFieldsTransformerEditor } from 'app/core/components/TransformersUI/LabelsToFieldsTransformerEditor';
 
 /**
  * Transforms LokiStreamResult structure into a dataFrame. Used when doing standard queries and newer version of Loki.
@@ -57,6 +58,43 @@ export function lokiStreamResultToDataFrame(stream: LokiStreamResult, reverse?: 
   const usedUids: { string?: number } = {};
 
   for (const [ts, line] of stream.values) {
+    // num ns epoch in string, we convert it to iso string here so it matches old format
+    times.add(new Date(parseInt(ts.substr(0, ts.length - 6), 10)).toISOString());
+    timesNs.add(ts);
+    lines.add(line);
+    uids.add(createUid(ts, labelsString, line, usedUids));
+  }
+
+  return constructDataFrame(times, timesNs, lines, uids, labels, reverse, refId);
+}
+
+export function lokiStreamResultToDataFrameLimited(
+  stream: LokiStreamResult,
+  remainingCount: number,
+  reverse?: boolean,
+  refId?: string
+): DataFrame {
+  const labels: Labels = stream.stream;
+  const labelsString = Object.entries(labels)
+    .map(([key, val]) => `${key}="${val}"`)
+    .sort()
+    .join('');
+
+  const times = new ArrayVector<string>([]);
+  const timesNs = new ArrayVector<string>([]);
+  const lines = new ArrayVector<string>([]);
+  const uids = new ArrayVector<string>([]);
+  let currentCount = 0;
+
+  // We need to store and track all used uids to ensure that uids are unique
+  const usedUids: { string?: number } = {};
+
+  for (const [ts, line] of stream.values) {
+    if (currentCount >= remainingCount) {
+      break;
+    }
+    currentCount++;
+
     // num ns epoch in string, we convert it to iso string here so it matches old format
     times.add(new Date(parseInt(ts.substr(0, ts.length - 6), 10)).toISOString());
     timesNs.add(ts);
@@ -151,6 +189,52 @@ export function appendResponseToBufferedData(response: LokiTailResponse, data: M
       idField.values.add(createUid(ts, allLabelsString, line, usedUids));
     }
   }
+}
+
+export function convertStreamToDataFrames(response: LokiTailResponse, reverse: boolean): DataFrame[] {
+  // Should we do anything with: response.dropped_entries?
+  const result: DataFrame[] = [];
+  const streams: LokiStreamResult[] = response.streams;
+
+  if (!streams || !streams.length) {
+    return result;
+  }
+
+  for (const stream of streams) {
+    const data = lokiStreamResultToDataFrame(stream, reverse);
+    data.meta = { preferredVisualisationType: 'logs' };
+    result.push(data);
+  }
+
+  return result;
+}
+
+export function convertStreamToDataFramesLimited(
+  response: LokiTailResponse,
+  reverse: boolean,
+  remainingCount: number
+): DataFrame[] {
+  // Should we do anything with: response.dropped_entries?
+  const result: DataFrame[] = [];
+  const streams: LokiStreamResult[] = response.streams;
+  let currentCount = 0;
+
+  if (!streams || !streams.length) {
+    return result;
+  }
+
+  for (const stream of streams) {
+    if (currentCount >= remainingCount) {
+      break;
+    }
+    const data = lokiStreamResultToDataFrameLimited(stream, remainingCount - currentCount, reverse);
+    currentCount += data.length;
+
+    data.meta = { preferredVisualisationType: 'logs' };
+    result.push(data);
+  }
+
+  return result;
 }
 
 function createUid(ts: string, labelsString: string, line: string, usedUids: any): string {
